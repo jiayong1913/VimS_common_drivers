@@ -1,55 +1,77 @@
-name: Build ODROID-C5 Device Tree (DTB/DTBO)
+name: Build Khadas ODROID Device Tree (DTB/DTBO)
 
 on:
   push:
-    branches: [ "main" ] # 当 main 分支有代码提交时自动触发
-  workflow_dispatch: # 支持在 GitHub 网页端手动点击按钮触发
+    branches: [ "main" ]
+  workflow_dispatch:
 
 jobs:
   build-dtbs:
-    # 彻底告别自托管服务器，直接使用 GitHub 官方的免费执行机
     runs-on: ubuntu-latest
 
     env:
-      # Hardkernel 针对 Android 14 Amlogic 芯片的独立内核仓库
+      # 基准 Linux 内核仓库（用于提供基础编译系统、Makefile、Kconfig等）
+      BASE_KERNEL_REPO: "https://github.com"
+      BASE_KERNEL_BRANCH: "odroidg12-5.15.y"
+      
+      # 您的 Khadas 独立设备树驱动仓库配置
       KERNEL_REPO: "https://github.com/khadas/common_drivers"
-      # Android 14 对应的内核分支（通常为 5.15 或 6.1 核心，根据官方最新 churchill 分支匹配）
-      KERNEL_BRANCH: "khadas-vim4-android14" 
-      # 交叉编译工具链架构
+      KERNEL_BRANCH: "khadas-vim4-android14"
+      
       ARCH: arm64
       CROSS_COMPILE: aarch64-linux-gnu-
 
     steps:
-      - name: 1. 安装交叉编译器与编译依赖
+      - name: 1. 安装交叉编译器与编译依赖工具
         run: |
           sudo apt-get update
           sudo apt-get install -y git build-essential gcc-aarch64-linux-gnu \
             bison flex libssl-dev libncurses-dev device-tree-compiler bc lzop
 
-      - name: 2. 浅克隆 Hardkernel 内核源码 (加速下载)
+      - name: 2. 浅克隆主内核编译系统 (基础大本营)
         run: |
-          # 使用 --depth 1 仅拉取最后一版提交，极大地减少 git 克隆所需时间
-          git clone --depth 1 -b ${{ env.KERNEL_BRANCH }} ${{ env.KERNEL_REPO }} kernel-source
+          git clone --depth 1 -b ${{ env.BASE_KERNEL_BRANCH }} ${{ env.BASE_KERNEL_REPO }} linux-kernel
 
-      - name: 3. 配置内核编译环境
+      - name: 3. 自动化拉取 Khadas 独立设备树并覆盖
         run: |
-          cd kernel-source
-          # 载入 ODROID-C5 对应的标准 Android 内核配置文件
-          # 提示：如果是新版芯片，名称通常为 odroidc5_defconfig 或 amlogic_g12_defconfig
-          make ARCH=${{ env.ARCH }} CROSS_COMPILE=${{ env.CROSS_COMPILE }} odroidc5_defconfig
+          # 1. 在同级目录下载 Khadas 源码
+          git clone --depth 1 -b ${{ env.KERNEL_BRANCH }} ${{ env.KERNEL_REPO }} khadas-drivers
+          
+          # 2. 将 Khadas 仓库中专属的设备树与核心文件融合到主编译环境中
+          # 覆盖 Amlogic 平台 dts 目录下的所有新设备树文件
+          rsync -av khadas-drivers/arch/arm64/boot/dts/amlogic/ linux-kernel/arch/arm64/boot/dts/amlogic/
+          
+          # 覆盖外置驱动相关的头文件及依赖（保持其内部 include 关系完整）
+          if [ -d "khadas-drivers/include" ]; then
+            rsync -av khadas-drivers/include/ linux-kernel/include/
+          fi
 
-      - name: 4. 自动化编译设备树 (DTB & DTBO)
+      - name: 4. 配置内核并选择最优 Defconfig
         run: |
-          cd kernel-source
-          # 仅编译设备树，不编译主内核镜像，1分钟内即可完成
+          cd linux-kernel
+          # 自动扫描并匹配可用配置文件，生成编译上下文 .config 
+          if [ -f "arch/arm64/configs/amlogic_g12_defconfig" ]; then
+            CONF="amlogic_g12_defconfig"
+          elif [ -f "arch/arm64/configs/meson64_defconfig" ]; then
+            CONF="meson64_defconfig"
+          else
+            CONF="defconfig"
+          fi
+          
+          echo "Selected Config: $CONF"
+          make ARCH=${{ env.ARCH }} CROSS_COMPILE=${{ env.CROSS_COMPILE }} $CONF
+
+      - name: 5. 编译 Khadas 专属设备树 (DTB & DTBO)
+        run: |
+          cd linux-kernel
+          # 此时编译系统包含了主 Makefile，且 Amlogic 目录下已融合了 Khadas 的最新设备树文件
           make ARCH=${{ env.ARCH }} CROSS_COMPILE=${{ env.CROSS_COMPILE }} dtbs
 
-      - name: 5. 收集并上传生成的 DTB/DTBO 文件
+      - name: 6. 收集并上传生成的 DTB/DTBO 文件
         uses: actions/upload-artifact@v4
         with:
-          name: odroid-c5-device-tree-blobs
-          # 动态匹配 Amlogic 平台下编译出的 dtb (主板) 和 dtbo (覆盖层) 文件
+          name: odroid-khadas-device-tree-blobs
           path: |
-            kernel-source/arch/arm64/boot/dts/amlogic/*.dtb
-            kernel-source/arch/arm64/boot/dts/amlogic/*.dtbo
-          retention-days: 7 # 固件在 GitHub Actions 页面保留 7 天
+            linux-kernel/arch/arm64/boot/dts/amlogic/*.dtb
+            linux-kernel/arch/arm64/boot/dts/amlogic/*.dtbo
+          retention-days: 7
