@@ -1,0 +1,55 @@
+name: Build ODROID-C5 Device Tree (DTB/DTBO)
+
+on:
+  push:
+    branches: [ "main" ] # 当 main 分支有代码提交时自动触发
+  workflow_dispatch: # 支持在 GitHub 网页端手动点击按钮触发
+
+jobs:
+  build-dtbs:
+    # 彻底告别自托管服务器，直接使用 GitHub 官方的免费执行机
+    runs-on: ubuntu-latest
+
+    env:
+      # Hardkernel 针对 Android 14 Amlogic 芯片的独立内核仓库
+      KERNEL_REPO: "https://github.com/khadas/common_drivers"
+      # Android 14 对应的内核分支（通常为 5.15 或 6.1 核心，根据官方最新 churchill 分支匹配）
+      KERNEL_BRANCH: "khadas-vim4-android14" 
+      # 交叉编译工具链架构
+      ARCH: arm64
+      CROSS_COMPILE: aarch64-linux-gnu-
+
+    steps:
+      - name: 1. 安装交叉编译器与编译依赖
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y git build-essential gcc-aarch64-linux-gnu \
+            bison flex libssl-dev libncurses-dev device-tree-compiler bc lzop
+
+      - name: 2. 浅克隆 Hardkernel 内核源码 (加速下载)
+        run: |
+          # 使用 --depth 1 仅拉取最后一版提交，极大地减少 git 克隆所需时间
+          git clone --depth 1 -b ${{ env.KERNEL_BRANCH }} ${{ env.KERNEL_REPO }} kernel-source
+
+      - name: 3. 配置内核编译环境
+        run: |
+          cd kernel-source
+          # 载入 ODROID-C5 对应的标准 Android 内核配置文件
+          # 提示：如果是新版芯片，名称通常为 odroidc5_defconfig 或 amlogic_g12_defconfig
+          make ARCH=${{ env.ARCH }} CROSS_COMPILE=${{ env.CROSS_COMPILE }} odroidc5_defconfig
+
+      - name: 4. 自动化编译设备树 (DTB & DTBO)
+        run: |
+          cd kernel-source
+          # 仅编译设备树，不编译主内核镜像，1分钟内即可完成
+          make ARCH=${{ env.ARCH }} CROSS_COMPILE=${{ env.CROSS_COMPILE }} dtbs
+
+      - name: 5. 收集并上传生成的 DTB/DTBO 文件
+        uses: actions/upload-artifact@v4
+        with:
+          name: odroid-c5-device-tree-blobs
+          # 动态匹配 Amlogic 平台下编译出的 dtb (主板) 和 dtbo (覆盖层) 文件
+          path: |
+            kernel-source/arch/arm64/boot/dts/amlogic/*.dtb
+            kernel-source/arch/arm64/boot/dts/amlogic/*.dtbo
+          retention-days: 7 # 固件在 GitHub Actions 页面保留 7 天
