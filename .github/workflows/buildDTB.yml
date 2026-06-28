@@ -11,8 +11,6 @@ jobs:
 
     env:
       # 基准 Linux 内核仓库（用于提供基础编译系统、Makefile、Kconfig等）
-      BASE_KERNEL_REPO: "https://github.com"
-      BASE_KERNEL_BRANCH: "odroidg12-5.15.y"
       
       # 您的 Khadas 独立设备树驱动仓库配置
       KERNEL_REPO: "https://github.com/khadas/common_drivers"
